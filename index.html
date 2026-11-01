@@ -1173,7 +1173,9 @@ body {
   font-size: 11px;
 }
 
-.wire-style-toggle .btn.active {
+.wire-style-toggle .btn.active,
+.btn-toggle-labels.active,
+#btn-toggle-labels.active {
   background-color: rgba(56, 189, 248, 0.2);
   color: var(--accent-blue);
   border-color: var(--accent-blue);
@@ -1889,6 +1891,7 @@ body {
 }
 
 </style>
+
 </head>
 <body>
   <!-- Header Bar -->
@@ -2124,6 +2127,11 @@ body {
             <button id="btn-wire-ortho" class="btn btn-outline btn-sm" title="Orthogonal Drag-Point Lines">📐 Ortho</button>
           </div>
 
+          <!-- Boolean Expression Labels Toggle Button -->
+          <button id="btn-toggle-labels" class="btn btn-outline btn-sm active" title="Click to Hide Boolean Expression Badges on Circuit Ports">
+            <span class="btn-icon">🔤</span> <span id="label-toggle-text">Expressions: ON</span>
+          </button>
+
           <button id="btn-zoom-in" class="icon-btn" title="Zoom In">+</button>
           <button id="btn-zoom-out" class="icon-btn" title="Zoom Out">−</button>
           <button id="btn-delete-selected" class="btn btn-outline btn-sm" title="Delete Selected Gate, Note, or Wire" style="color: var(--accent-red);">
@@ -2162,6 +2170,7 @@ body {
     </main>
   </div>
 
+  <!-- Scripts (Self-Contained Standalone Bundle for GitHub Pages) -->
   <!-- Scripts (Self-Contained Standalone Bundle for GitHub Pages) -->
   <script>
 
@@ -4186,6 +4195,56 @@ body {
       return `${node.type}(${childKeys.join(',')})`;
     }
 
+    /**
+     * Compute mathematically accurate Boolean expression labels for gates and intermediate signals
+     */
+    static formatGateSignalLabel(gateType, childLabels) {
+      const base = (gateType || '').replace(/[0-9]/g, '').toUpperCase();
+      const wrapIfNeeded = (str) => {
+        if (!str) return '';
+        if (str.length <= 2) return str;
+        if (str.startsWith('(') && str.endsWith(')')) return str;
+        if (str.endsWith("'") && !str.includes(' ') && !str.includes('+') && !str.includes('·') && !str.includes('⊕')) return str;
+        if (str.includes('+') || str.includes('⊕') || str.includes('·') || str.includes('⊙') || str.includes(' ')) {
+          return `(${str})`;
+        }
+        return str;
+      };
+
+      switch (base) {
+        case 'NOT': {
+          const c = childLabels[0] || '';
+          if (!c) return 'NOT';
+          if (c.length <= 2 && /^[a-zA-Z0-9]+$/.test(c)) return `${c}'`;
+          if (c.startsWith('(') && c.endsWith(')')) return `${c}'`;
+          return `(${c})'`;
+        }
+        case 'AND': {
+          const formatted = childLabels.map(l => (l.includes('+') || l.includes('⊕')) ? wrapIfNeeded(l) : l);
+          return formatted.join('·');
+        }
+        case 'OR': {
+          return childLabels.join(' + ');
+        }
+        case 'NAND': {
+          const inner = childLabels.map(l => (l.includes('+') || l.includes('⊕')) ? wrapIfNeeded(l) : l).join('·');
+          return `(${inner})'`;
+        }
+        case 'NOR': {
+          const inner = childLabels.join(' + ');
+          return `(${inner})'`;
+        }
+        case 'XOR': {
+          return childLabels.join(' ⊕ ');
+        }
+        case 'XNOR': {
+          return childLabels.join(' ⊙ ');
+        }
+        default:
+          return childLabels.join(` ${base} `);
+      }
+    }
+
     static buildSubCircuit(circuit, node, inputSwitches, gatesCollector, busRailX, varColors, nodeCache = new Map()) {
       if (!node) return null;
 
@@ -4232,7 +4291,7 @@ body {
         circuit.addComponent(notGate);
         gatesCollector.push(notGate);
 
-        const outLabel = childInfo.signalName ? `${childInfo.signalName}'` : 'NOT';
+        const outLabel = this.formatGateSignalLabel('NOT', [childInfo.signalName]);
         notGate.label = outLabel;
 
         if (childInfo && childInfo.port) {
@@ -4266,7 +4325,7 @@ body {
       gatesCollector.push(gate);
 
       const childLabels = childInfos.map(c => c.signalName);
-      gate.label = childLabels.join(node.type === 'AND' ? '·' : (node.type === 'OR' ? '+' : '⊕'));
+      gate.label = this.formatGateSignalLabel(compType, childLabels);
 
       for (let i = 0; i < childInfos.length; i++) {
         const info = childInfos[i];
@@ -4315,13 +4374,15 @@ body {
           w2.channelX = busRailX[nextInfo.varName];
         }
 
+        const cascadedLabel = this.formatGateSignalLabel(type, [currentInfo.signalName, nextInfo.signalName]);
         currentInfo = {
           port: gate.outputs[0],
-          signalName: `${currentInfo.signalName} ${type === 'XOR' ? '⊕' : (type === 'AND' ? '·' : type)} ${nextInfo.signalName}`,
+          signalName: cascadedLabel,
           color: '#38bdf8',
           canonicalKey: intermediateKey,
           gate
         };
+        gate.label = cascadedLabel;
 
         if (nodeCache && intermediateKey) {
           nodeCache.set(intermediateKey, currentInfo);
@@ -5140,7 +5201,11 @@ body {
       this.saveSettings();
 
       if (window.App && window.App.canvas) {
+        window.App.canvas.showPinLabels = this.settings.showPinLabels;
         window.App.canvas.requestRedraw();
+        if (typeof window.App.updateLabelButtonUI === 'function') {
+          window.App.updateLabelButtonUI(this.settings.showPinLabels);
+        }
       }
     }
 
@@ -5319,6 +5384,21 @@ body {
         this.circuit.setWireStyle(style);
       }
       this.requestRedraw();
+    }
+
+    togglePinLabels(forceState = null) {
+      if (forceState !== null) {
+        this.showPinLabels = !!forceState;
+      } else {
+        const current = (this.showPinLabels !== undefined) ? this.showPinLabels : (window.App?.settings?.settings?.showPinLabels !== false);
+        this.showPinLabels = !current;
+      }
+      if (window.App?.settings?.settings) {
+        window.App.settings.settings.showPinLabels = this.showPinLabels;
+        window.App.settings.save();
+      }
+      this.requestRedraw();
+      return this.showPinLabels;
     }
 
     screenToWorld(sx, sy) {
@@ -6471,8 +6551,8 @@ body {
 
       ctx.save();
 
-      // Pin Signal Label Badge
-      const showPinBadges = window.App?.settings?.settings?.showPinLabels !== false;
+      // Pin Signal Label Badge (Boolean Expression)
+      const showPinBadges = (this.showPinLabels !== undefined) ? this.showPinLabels : (window.App?.settings?.settings?.showPinLabels !== false);
       if (showPinBadges && port.type === 'INPUT' && port.signalLabel) {
         ctx.save();
         ctx.font = 'bold 10px monospace';
@@ -7887,6 +7967,30 @@ ${stmts.map(s => `* Output ${s.outputName} = ${s.ast.toText()}`).join('\n')}
         btnWireOrtho.classList.add('active');
         btnWireBezier?.classList.remove('active');
         this.canvas.setWireStyle('orthogonal');
+      });
+
+      // Boolean Expression Badges Toggle Button
+      const btnToggleLabels = document.getElementById('btn-toggle-labels');
+      this.updateLabelButtonUI = (isOn) => {
+        if (!btnToggleLabels) return;
+        if (isOn) {
+          btnToggleLabels.classList.add('active');
+          btnToggleLabels.title = 'Click to Hide Boolean Expression Badges on Circuit Ports';
+          btnToggleLabels.innerHTML = '<span class="btn-icon">🔤</span> <span>Expressions: ON</span>';
+        } else {
+          btnToggleLabels.classList.remove('active');
+          btnToggleLabels.title = 'Click to Show Boolean Expression Badges on Circuit Ports';
+          btnToggleLabels.innerHTML = '<span class="btn-icon">🔤</span> <span>Expressions: OFF</span>';
+        }
+      };
+
+      const initialLabelsState = this.settings?.settings?.showPinLabels !== false;
+      this.canvas.showPinLabels = initialLabelsState;
+      this.updateLabelButtonUI(initialLabelsState);
+
+      btnToggleLabels?.addEventListener('click', () => {
+        const nextState = this.canvas.togglePinLabels();
+        this.updateLabelButtonUI(nextState);
       });
 
       // Canvas Zoom & Export Controls
